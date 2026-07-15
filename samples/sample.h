@@ -93,6 +93,10 @@ struct SampleContext
 	// View-only: treat simulation +Z as up when drawing. Does not touch the
 	// simulation. The frame loop hands this to the camera's render transform.
 	bool viewZUp = false;
+	bool headless = false;
+	bool hasInputBasis = false;
+	b3Vec3 inputForward = { 0.0f, 0.0f, -1.0f };
+	b3Vec3 inputRight = { 1.0f, 0.0f, 0.0f };
 
 	float sunStrength = 1.0f;
 	int debugView = 0;

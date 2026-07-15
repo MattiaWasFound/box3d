@@ -217,7 +217,10 @@ public:
 			// }
 		}
 
-		printf( "max index = %d\n", maxAreaIndex );
+		if ( m_context->headless == false )
+		{
+			printf( "max index = %d\n", maxAreaIndex );
+		}
 
 		// constexpr int n = m_isDebug ? 1000 : INT_MAX;
 
@@ -287,7 +290,10 @@ public:
 			m_proxies[node->userData] = proxy;
 		}
 
-		printf( "max index = %d\n", maxAreaIndex );
+		if ( m_context->headless == false )
+		{
+			printf( "max index = %d\n", maxAreaIndex );
+		}
 
 		// constexpr int n = m_isDebug ? 1000 : INT_MAX;
 

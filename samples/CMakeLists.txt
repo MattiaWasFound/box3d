@@ -140,6 +140,28 @@ endif()
 add_subdirectory(shaders)
 add_subdirectory(gfx)
 
+set(SAMPLE_SCENE_FILES
+    sample_benchmark.cpp
+    sample_bodies.cpp
+    sample_character.cpp
+    sample_collision.cpp
+    sample_compound.cpp
+    sample_continuous.cpp
+    sample_determinism.cpp
+    sample_events.cpp
+    sample_geometry.cpp
+    sample_issues.cpp
+    sample_joint.cpp
+    sample_manifold.cpp
+    sample_mesh.cpp
+    sample_ragdoll.cpp
+    sample_robustness.cpp
+    sample_shapes.cpp
+    sample_stacking.cpp
+    sample_tree.cpp
+    sample_world.cpp
+)
+
 set(SAMPLE_FILES
     main.cpp
 
@@ -159,27 +181,8 @@ set(SAMPLE_FILES
     tiny_obj_loader.h
     earcut.h
 
-    # Samples
-    sample_benchmark.cpp
-    sample_bodies.cpp
-    sample_character.cpp
-    sample_collision.cpp
-    sample_compound.cpp
-    sample_continuous.cpp
-    sample_determinism.cpp
-    sample_events.cpp
-    sample_geometry.cpp
-    sample_issues.cpp
-    sample_joint.cpp
-    sample_manifold.cpp
-    sample_mesh.cpp
-    sample_ragdoll.cpp
     sample_replay.cpp
-    sample_robustness.cpp
-    sample_shapes.cpp
-    sample_stacking.cpp
-    sample_tree.cpp
-    sample_world.cpp
+    ${SAMPLE_SCENE_FILES}
 )
 
 add_executable(samples ${SAMPLE_FILES})
@@ -212,5 +215,33 @@ set_target_properties(samples PROPERTIES
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
 )
+
+if(BOX3D_SAMPLE_PARITY)
+add_executable(sample_hash
+    sample_hash.cpp
+    sample_hash_sokol_stubs.cpp
+    host/camera.cpp
+    sample.cpp
+    sample.h
+    mesh_loader.cpp
+    mesh_loader.h
+    jsmn.h
+    tiny_obj_loader.h
+    earcut.h
+    ${SAMPLE_SCENE_FILES}
+)
+
+target_include_directories(sample_hash PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../data")
+
+target_link_libraries(sample_hash PRIVATE gfx shared imgui implot sokol nfd)
+
+set_target_properties(sample_hash PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
+endif()
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SAMPLE_FILES})

@@ -389,6 +389,12 @@ void Sample::ResetText()
 {
 	// Below the menu bar when the UI shows. Hidden, the minimal HUD owns the
 	// top-left, so start lower.
+	if ( m_context->headless )
+	{
+		m_textLine = 0;
+		return;
+	}
+
 	float fontSize = ImGui::GetFontSize();
 	if ( m_context->showUI )
 	{
@@ -457,7 +463,7 @@ void Sample::Step()
 	m_userMaterialId = 0;
 
 	// Cursor pick feeds the surface type readout only. Highlighting is selection driven.
-	if ( m_camera->m_thirdPerson == false )
+	if ( m_context->headless == false && m_camera->m_thirdPerson == false )
 	{
 		PickRay pickRay = m_camera->BuildPickRay( m_context->mouseX, m_context->mouseY );
 
@@ -474,6 +480,11 @@ void Sample::Step()
 
 			m_userMaterialId = result.userMaterialId;
 		}
+	}
+
+	if ( m_context->headless )
+	{
+		return;
 	}
 
 	// The frame latched the origin before Step, but a third person follow moves the eye while
@@ -1279,6 +1290,11 @@ void Sample::MouseMove( b3Vec2 p )
 
 void Sample::DrawTextLine( const char* text, ... )
 {
+	if ( m_context->headless )
+	{
+		return;
+	}
+
 	va_list args;
 	va_start( args, text );
 	char buffer[512];

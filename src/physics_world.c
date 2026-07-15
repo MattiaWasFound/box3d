@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "physics_world.h"
+#include "box3d/box3d_test.h"
 
 #include "arena_allocator.h"
 #include "bitset.h"
@@ -2219,6 +2220,34 @@ b3Counters b3World_GetCounters( b3WorldId worldId )
 	}
 
 	return s;
+}
+
+int b3World_GetBodyCapacity( b3WorldId worldId )
+{
+	b3World* world = b3GetUnlockedWorldFromId( worldId );
+	if ( world == NULL )
+	{
+		return 0;
+	}
+
+	return world->bodies.count;
+}
+
+b3BodyId b3World_GetBodyByIndex( b3WorldId worldId, int index )
+{
+	b3World* world = b3GetUnlockedWorldFromId( worldId );
+	if ( world == NULL || index < 0 || world->bodies.count <= index )
+	{
+		return b3_nullBodyId;
+	}
+
+	b3Body* body = world->bodies.data + index;
+	if ( body->setIndex == B3_NULL_INDEX )
+	{
+		return b3_nullBodyId;
+	}
+
+	return ( b3BodyId ){ index + 1, world->worldId, body->generation };
 }
 
 b3Capacity b3World_GetMaxCapacity( b3WorldId worldId )

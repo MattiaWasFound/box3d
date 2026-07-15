@@ -1521,8 +1521,8 @@ public:
 
 		// Read input
 		b3Vec2 throttle = { 0.0f, 0.0f };
-		b3Vec3 forward = -m_camera->GetForward();
-		b3Vec3 right = m_camera->GetRight();
+		b3Vec3 forward = m_context->hasInputBasis ? m_context->inputForward : -m_camera->GetForward();
+		b3Vec3 right = m_context->hasInputBasis ? m_context->inputRight : m_camera->GetRight();
 		forward.y = 0.0f;
 
 		// Normalize forward to horizontal plane

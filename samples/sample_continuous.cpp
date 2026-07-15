@@ -173,7 +173,10 @@ public:
 		b3Vec3 range = { 50.0f, 50.0f, 50.0f };
 		b3Vec3 omega = RandomVec3( -range, range );
 		bodyDef.angularVelocity = omega;
-		printf( "%f, %f, %f\n", omega.x, omega.y, omega.z );
+		if ( m_context->headless == false )
+		{
+			printf( "%f, %f, %f\n", omega.x, omega.y, omega.z );
+		}
 		b3BodyId stickBodyId = b3CreateBody( m_worldId, &bodyDef );
 		b3BoxHull stickBox = b3MakeBoxHull( 2.0f, 0.1f, 0.1f );
 		shapeDef.baseMaterial.rollingResistance = 0.1f;
@@ -553,14 +556,20 @@ public:
 		shapeDef.filter.categoryBits = 2;
 		shapeDef.filter.maskBits = 1;
 
-		g_randomSeed = (uint32_t)b3GetTicks();
+		if ( m_context->headless == false )
+		{
+			g_randomSeed = (uint32_t)b3GetTicks();
+		}
 
 		bool simulateAll = true;
 		//g_randomSeed = 1910133196;
 
 		m_runCount += 1;
 		m_stepCount = 0;
-		printf( "run %d seed %u\n", m_runCount, g_randomSeed );
+		if ( m_context->headless == false )
+		{
+			printf( "run %d seed %u\n", m_runCount, g_randomSeed );
+		}
 
 		for ( int i = 0; i < m_gridCount; ++i )
 		{
@@ -670,8 +679,11 @@ public:
 			if ( massCenter.y < -2.0f )
 			{
 				IndexPair pair = ConvertToPair( b3Body_GetUserData( bodyId ) );
-				printf( "index1: %d - index2: %d\n", pair.index1, pair.index2 );
-				printf( "(%6.2f, %6.2f, %6.2f)\n", massCenter.x, massCenter.y, massCenter.z );
+				if ( m_context->headless == false )
+				{
+					printf( "index1: %d - index2: %d\n", pair.index1, pair.index2 );
+					printf( "(%6.2f, %6.2f, %6.2f)\n", massCenter.x, massCenter.y, massCenter.z );
+				}
 				m_context->pause = true;
 				m_failure = true;
 				m_autoGenerate = false;
