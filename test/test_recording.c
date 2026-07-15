@@ -345,6 +345,258 @@ static int ScrubBackward( void )
 	return 0;
 }
 
+// A replay-owned world is still a normal live world. Seek into its past, mutate it, and use it as
+// the seed of a new recording, which is the ownership pattern used by the interactive rewind sample.
+static int BranchFromScrubbedWorld( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.position = (b3Pos){ 0.0f, 5.0f, 0.0f };
+	b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
+	b3Sphere sphere = { b3Vec3_zero, 0.5f };
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.density = 1.0f;
+	b3CreateSphereShape( bodyId, &shapeDef, &sphere );
+
+	b3Recording* original = b3CreateRecording( 0 );
+	b3World_StartRecording( worldId, original );
+	for ( int i = 0; i < 30; ++i )
+	{
+		b3World_Step( worldId, 1.0f / 60.0f, 4 );
+	}
+	b3World_StopRecording( worldId );
+	b3DestroyWorld( worldId );
+
+	b3RecPlayer* player = b3RecPlayer_Create( b3Recording_GetData( original ), b3Recording_GetSize( original ), 1 );
+	ENSURE( player != NULL );
+	b3RecPlayer_SeekFrame( player, 10 );
+	ENSURE( b3RecPlayer_GetFrame( player ) == 10 );
+
+	b3WorldId branchWorld = b3RecPlayer_GetWorldId( player );
+	b3BodyId branchBody = b3RecPlayer_GetBodyId( player, 0 );
+	ENSURE( b3Body_IsValid( branchBody ) );
+	int bytesBeforeTrim = b3GetByteCount();
+	b3RecPlayer_TrimHistory( player );
+	ENSURE( b3World_IsValid( branchWorld ) );
+	ENSURE( b3RecPlayer_GetKeyframeBytes( player ) == 0 );
+	ENSURE( b3GetByteCount() < bytesBeforeTrim );
+
+	b3Recording* branch = b3CreateRecording( 0 );
+	b3World_StartRecording( branchWorld, branch );
+	b3Body_ApplyLinearImpulseToCenter( branchBody, (b3Vec3){ 5.0f, 8.0f, 0.0f }, true );
+	for ( int i = 0; i < 20; ++i )
+	{
+		b3World_Step( branchWorld, 1.0f / 60.0f, 4 );
+	}
+	b3World_StopRecording( branchWorld );
+
+	ENSURE( b3ValidateReplay( b3Recording_GetData( branch ), b3Recording_GetSize( branch ), 1 ) );
+
+	b3DestroyRecording( branch );
+	b3RecPlayer_Destroy( player );
+	b3DestroyRecording( original );
+	return 0;
+}
+
+// Branching from a frame where a recorded input rig (kinematic drag body + motor joint) was
+// active resurrects the rig with its recorded velocity; the branched timeline must be able to
+// find it by name and destroy it, or the kinematic body hauls its payload forever. This is the
+// interactive rewind sample's scrub-back-mid-throw scenario.
+static int BranchDropsResurrectedGrabRig( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+
+	b3BodyDef ballDef = b3DefaultBodyDef();
+	ballDef.type = b3_dynamicBody;
+	ballDef.position = (b3Pos){ 0.0f, 2.0f, 0.0f };
+	b3BodyId ballId = b3CreateBody( worldId, &ballDef );
+	b3Sphere sphere = { b3Vec3_zero, 0.5f };
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.density = 1.0f;
+	b3CreateSphereShape( ballId, &shapeDef, &sphere );
+
+	b3Recording* recording = b3CreateRecording( 0 );
+	b3World_StartRecording( worldId, recording );
+
+	// Grab: kinematic mouse body + motor joint, the sample app's Ctrl-drag rig.
+	b3BodyDef mouseDef = b3DefaultBodyDef();
+	mouseDef.type = b3_kinematicBody;
+	mouseDef.position = ballDef.position;
+	mouseDef.enableSleep = false;
+	mouseDef.name = "mouse";
+	b3BodyId mouseId = b3CreateBody( worldId, &mouseDef );
+
+	b3MotorJointDef jointDef = b3DefaultMotorJointDef();
+	jointDef.base.bodyIdA = mouseId;
+	jointDef.base.bodyIdB = ballId;
+	jointDef.linearHertz = 7.5f;
+	jointDef.linearDampingRatio = 1.0f;
+	jointDef.maxSpringForce = 1000.0f;
+	b3JointId jointId = b3CreateMotorJoint( worldId, &jointDef );
+
+	// Throw upward for 30 frames, then release and let it fly for 30 more.
+	float dt = 1.0f / 60.0f;
+	for ( int i = 0; i < 30; ++i )
+	{
+		b3Pos target = { 0.0f, 2.0f + 0.2f * (float)( i + 1 ), 0.0f };
+		b3Body_SetTargetTransform( mouseId, ( b3WorldTransform ){ target, b3Quat_identity }, dt, true );
+		b3World_Step( worldId, dt, 4 );
+	}
+	b3DestroyJoint( jointId, true );
+	b3DestroyBody( mouseId );
+	for ( int i = 0; i < 30; ++i )
+	{
+		b3World_Step( worldId, dt, 4 );
+	}
+	b3World_StopRecording( worldId );
+	b3DestroyWorld( worldId );
+
+	// Scrub back into the middle of the drag and branch there.
+	b3RecPlayer* player = b3RecPlayer_Create( b3Recording_GetData( recording ), b3Recording_GetSize( recording ), 1 );
+	ENSURE( player != NULL );
+	b3RecPlayer_SeekFrame( player, 20 );
+	ENSURE( b3RecPlayer_GetFrame( player ) == 20 );
+	b3RecPlayer_TrimHistory( player );
+
+	// The rig is alive in the branched world; find it by name and destroy it like MouseUp would.
+	int destroyed = 0;
+	int bodyCount = b3RecPlayer_GetBodyCount( player );
+	for ( int i = 0; i < bodyCount; ++i )
+	{
+		b3BodyId bodyId = b3RecPlayer_GetBodyId( player, i );
+		if ( b3Body_IsValid( bodyId ) && strcmp( b3Body_GetName( bodyId ), "mouse" ) == 0 )
+		{
+			b3DestroyBody( bodyId );
+			destroyed += 1;
+		}
+	}
+	ENSURE( destroyed == 1 );
+
+	// Without the rig, gravity must win: the ball ends up falling, not rising forever.
+	// Index 0 is the ball (first body created); ballId itself died with the original world.
+	b3BodyId branchBallId = b3RecPlayer_GetBodyId( player, 0 );
+	ENSURE( b3Body_IsValid( branchBallId ) );
+	// The ball leaves the branch with the throw's upward speed, so give gravity a few
+	// seconds; with the rig alive it would climb at a constant rate forever instead.
+	b3WorldId branchWorld = b3RecPlayer_GetWorldId( player );
+	for ( int i = 0; i < 240; ++i )
+	{
+		b3World_Step( branchWorld, dt, 4 );
+	}
+	b3Vec3 velocity = b3Body_GetLinearVelocity( branchBallId );
+	ENSURE( velocity.y < 0.0f );
+
+	b3RecPlayer_Destroy( player );
+	b3DestroyRecording( recording );
+	return 0;
+}
+
+static int IdleFramesSkipKeyframes( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	b3Recording* recording = b3CreateRecording( 0 );
+	b3World_StartRecording( worldId, recording );
+	for ( int i = 0; i < 64; ++i )
+	{
+		b3World_Step( worldId, 1.0f / 60.0f, 4 );
+	}
+	b3World_StopRecording( worldId );
+	b3DestroyWorld( worldId );
+
+	b3RecPlayer* player = b3RecPlayer_Create( b3Recording_GetData( recording ), b3Recording_GetSize( recording ), 1 );
+	ENSURE( player != NULL );
+	b3RecPlayer_SetKeyframePolicy( player, 16 * 1024 * 1024, 8 );
+	b3RecPlayer_SeekFrame( player, 64 );
+	ENSURE( b3RecPlayer_GetSkippedKeyframeCount( player ) > 0 );
+	ENSURE( b3RecPlayer_GetKeyframeBytes( player ) == 0 );
+	b3RecPlayer_SeekFrame( player, 17 );
+	ENSURE( b3RecPlayer_GetFrame( player ) == 17 );
+	ENSURE( !b3RecPlayer_HasDiverged( player ) );
+
+	b3RecPlayer_Destroy( player );
+
+	// The sub-stepping entry point must apply the same idle skip.
+	b3RecPlayer* subPlayer = b3RecPlayer_Create( b3Recording_GetData( recording ), b3Recording_GetSize( recording ), 1 );
+	ENSURE( subPlayer != NULL );
+	b3RecPlayer_SetKeyframePolicy( subPlayer, 16 * 1024 * 1024, 8 );
+	for ( int i = 0; i < 1024 && b3RecPlayer_GetFrame( subPlayer ) < 64; ++i )
+	{
+		b3RecPlayer_SubStepFrame( subPlayer );
+	}
+	ENSURE( b3RecPlayer_GetFrame( subPlayer ) == 64 );
+	ENSURE( b3RecPlayer_GetSkippedKeyframeCount( subPlayer ) > 0 );
+	ENSURE( b3RecPlayer_GetKeyframeBytes( subPlayer ) == 0 );
+
+	b3RecPlayer_Destroy( subPlayer );
+	b3DestroyRecording( recording );
+	return 0;
+}
+
+static int SleepingBodiesShareKeyframePages( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	b3Sphere sphere = { b3Vec3_zero, 0.2f };
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.density = 1.0f;
+
+	for ( int i = 0; i < 512; ++i )
+	{
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = b3_dynamicBody;
+		bodyDef.position = (b3Pos){ (float)( i % 32 ), 2.0f, (float)( i / 32 ) };
+		bodyDef.isAwake = false;
+		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
+		b3CreateSphereShape( bodyId, &shapeDef, &sphere );
+	}
+
+	b3BodyDef movingDef = b3DefaultBodyDef();
+	movingDef.type = b3_dynamicBody;
+	movingDef.position = (b3Pos){ -10.0f, 2.0f, 0.0f };
+	movingDef.linearVelocity = (b3Vec3){ 1.0f, 0.0f, 0.0f };
+	b3BodyId movingBody = b3CreateBody( worldId, &movingDef );
+	b3CreateSphereShape( movingBody, &shapeDef, &sphere );
+
+	b3Recording* recording = b3CreateRecording( 0 );
+	b3World_StartRecording( worldId, recording );
+	for ( int i = 0; i < 64; ++i )
+	{
+		b3World_Step( worldId, 1.0f / 60.0f, 4 );
+	}
+	b3World_StopRecording( worldId );
+	b3DestroyWorld( worldId );
+
+	b3RecHeader header;
+	memcpy( &header, b3Recording_GetData( recording ), sizeof( header ) );
+	ENSURE( header.snapshotSize > 0 );
+
+	b3RecPlayer* player = b3RecPlayer_Create( b3Recording_GetData( recording ), b3Recording_GetSize( recording ), 1 );
+	ENSURE( player != NULL );
+	b3RecPlayer_SetKeyframePolicy( player, 256 * 1024 * 1024, 8 );
+	b3RecPlayer_SeekFrame( player, 64 );
+	ENSURE( !b3RecPlayer_HasDiverged( player ) );
+
+	// Eight monolithic images would use roughly 8 * snapshotSize. COW pages should share the
+	// sleeping half of the world strongly enough to stay below four full images.
+	size_t retained = b3RecPlayer_GetKeyframeBytes( player );
+	size_t logical = b3RecPlayer_GetKeyframeLogicalBytes( player );
+	ENSURE( retained > 0 );
+	ENSURE( retained < logical );
+	ENSURE( retained < (size_t)header.snapshotSize );
+	printf( "    COW keyframes: %.2f MiB physical / %.2f MiB logical (%.0f%% saved)\n", retained / ( 1024.0 * 1024.0 ),
+			logical / ( 1024.0 * 1024.0 ), 100.0 * ( 1.0 - (double)retained / (double)logical ) );
+
+	b3RecPlayer_Destroy( player );
+	b3DestroyRecording( recording );
+	return 0;
+}
+
 // Record a scene that includes a mesh shape, create a player, seek backward, verify
 // it works and no divergence is reported. Also checks the keyframe-by-geometry-id
 // invariant: keyframeRec registry count should not grow beyond initial slot count.
@@ -1936,6 +2188,10 @@ int RecordingTest( void )
 	RUN_SUBTEST( MidStreamContacts );
 	RUN_SUBTEST( StagedStepCreationPose );
 	RUN_SUBTEST( ScrubBackward );
+	RUN_SUBTEST( BranchFromScrubbedWorld );
+	RUN_SUBTEST( BranchDropsResurrectedGrabRig );
+	RUN_SUBTEST( IdleFramesSkipKeyframes );
+	RUN_SUBTEST( SleepingBodiesShareKeyframePages );
 	RUN_SUBTEST( SeekWithHull );
 	RUN_SUBTEST( DebugShapeCallbacks );
 	RUN_SUBTEST( PlayerAccessors );

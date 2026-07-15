@@ -1175,6 +1175,9 @@ void Sample::MouseDown( b3Vec2 p, int button, int modifiers )
 			bodyDef.type = b3_kinematicBody;
 			bodyDef.position = m_mousePoint;
 			bodyDef.enableSleep = false;
+			// Named so replay consumers can find and remove a grab rig that a recording
+			// resurrects (see RagdollRewind::ResumeFromHere).
+			bodyDef.name = "mouse";
 			m_mouseBodyId = b3CreateBody( m_worldId, &bodyDef );
 
 			// Grabbing also selects so the body stays highlighted while dragged.

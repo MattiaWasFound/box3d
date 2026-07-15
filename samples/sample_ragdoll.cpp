@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 #include "human.h"
+#include "gfx/debug_adapter.h"
 #include "imgui.h"
 #include "sample.h"
+#include "gfx/keycodes.h"
 #include "gfx/draw.h"
 
 #include "box3d/box3d.h"
+
+#include <string.h>
 
 class RagdollOnBox : public Sample
 {
@@ -77,6 +81,347 @@ public:
 };
 
 static int sampleRagdollOnBox = RegisterSample( "Ragdoll", "Box", RagdollOnBox::Create );
+
+// A playable rewind prototype built on the recording player's exact world snapshots. The replay
+// world becomes the new live world when playback resumes, so contacts, warm-start impulses, islands,
+// broad-phase ordering, and id pools all continue from the selected frame.
+class RagdollRewind : public Sample
+{
+public:
+	explicit RagdollRewind( SampleContext* context )
+		: Sample( context )
+	{
+		if ( context->restart == false )
+		{
+			m_camera->SetView( 45.0f, 25.0f, 7.0f, { 0.0f, 1.0f, 0.0f } );
+		}
+
+		AddGroundBox( 20.0f );
+		m_human = {};
+		CreateHuman( &m_human, m_worldId, { 0.0f, 2.0f, 0.0f }, 5.0f, 1.0f, 0.7f, 1, nullptr, true );
+		BeginTimeline();
+	}
+
+	~RagdollRewind() override
+	{
+		DiscardRecording();
+		if ( m_previousRecording != nullptr )
+		{
+			b3DestroyRecording( m_previousRecording );
+			m_previousRecording = nullptr;
+		}
+		if ( m_previousPlayer != nullptr )
+		{
+			b3RecPlayer_Destroy( m_previousPlayer );
+			m_previousPlayer = nullptr;
+		}
+		if ( m_worldOwner != nullptr )
+		{
+			// The player owns the current world. Prevent Sample::~Sample from destroying it twice.
+			m_worldId = b3_nullWorldId;
+			b3RecPlayer_Destroy( m_worldOwner );
+			m_worldOwner = nullptr;
+		}
+	}
+
+	void Step() override
+	{
+		if ( m_scrubbing )
+		{
+			m_didStep = false;
+			return;
+		}
+
+		Sample::Step();
+		if ( m_didStep )
+		{
+			m_timelineFrames += 1;
+			// Two half-window recordings give a bounded rolling window: between one half and one
+			// full requested duration is always available, without editing the append-only tape.
+			int frameLimit = b3MaxInt( 1, (int)( 0.5f * m_historySeconds * m_context->hertz ) );
+			int halfTapeBudget = b3MaxInt( 256 * 1024, m_tapeBudgetMB * 1024 * 1024 / 2 );
+			bool tapeFull = b3Recording_GetSize( m_recording ) >= halfTapeBudget;
+			if ( m_timelineFrames >= frameLimit || tapeFull )
+			{
+				RotateTimeline();
+				m_rotations += 1;
+			}
+		}
+	}
+
+	void Keyboard( int key, int action, int modifiers ) override
+	{
+		(void)modifiers;
+		if ( key == KEY_SPACE && action == ACTION_PRESS )
+		{
+			if ( m_scrubbing )
+			{
+				ResumeFromHere();
+			}
+			else
+			{
+				PauseAndBuildHistory();
+			}
+		}
+	}
+
+	bool DrawControls() override
+	{
+		ImGui::TextWrapped( "Ctrl-drag a body. Space pauses; scrub anywhere; Space branches and plays from there." );
+		ImGui::PushItemWidth( 8.0f * ImGui::GetFontSize() );
+
+		if ( m_scrubbing )
+		{
+			int frame = m_scrubFrame;
+			if ( ImGui::SliderInt( "Timeline", &frame, 0, m_frameCount ) )
+			{
+				uint64_t ticks = b3GetTicks();
+				SeekTimeline( frame );
+				m_lastSeekMs = b3GetMilliseconds( ticks );
+			}
+			double seconds = m_context->hertz > 0.0f ? frame / m_context->hertz : 0.0;
+			ImGui::Text( "paused at %.2f s  (%d / %d)", seconds, frame, m_frameCount );
+			size_t keyframeBytes = b3RecPlayer_GetKeyframeBytes( m_worldOwner );
+			size_t logicalBytes = b3RecPlayer_GetKeyframeLogicalBytes( m_worldOwner );
+			if ( m_previousPlayer != nullptr )
+			{
+				keyframeBytes += b3RecPlayer_GetKeyframeBytes( m_previousPlayer );
+				logicalBytes += b3RecPlayer_GetKeyframeLogicalBytes( m_previousPlayer );
+			}
+			int skipped = b3RecPlayer_GetSkippedKeyframeCount( m_worldOwner );
+			if ( m_previousPlayer != nullptr )
+			{
+				skipped += b3RecPlayer_GetSkippedKeyframeCount( m_previousPlayer );
+			}
+			ImGui::Text( "recordings %.2f MB", m_recordingBytes / ( 1024.0 * 1024.0 ) );
+			float savedPercent = logicalBytes > 0 ? b3MaxFloat( 0.0f, 100.0f * ( 1.0f - (float)keyframeBytes / (float)logicalBytes ) ) : 0.0f;
+			ImGui::Text( "keyframes %.2f / %d MB, %.0f%% COW saved", keyframeBytes / ( 1024.0 * 1024.0 ), m_keyframeBudgetMB,
+						 savedPercent );
+			ImGui::Text( "%d idle keyframes skipped", skipped );
+			ImGui::Text( "pause build %.2f ms, last seek %.2f ms", m_buildHistoryMs, m_lastSeekMs );
+		}
+		else
+		{
+			ImGui::SliderFloat( "History seconds", &m_historySeconds, 2.0f, 60.0f, "%.0f s" );
+			ImGui::SliderInt( "Tape budget", &m_tapeBudgetMB, 1, 256, "%d MB" );
+			ImGui::SliderInt( "Keyframe budget", &m_keyframeBudgetMB, 8, 512, "%d MB" );
+			ImGui::SliderInt( "Keyframe interval", &m_keyframeInterval, 4, 64, "%d frames" );
+			int bytes = m_recording != nullptr ? b3Recording_GetSize( m_recording ) : 0;
+			int previousBytes = m_previousRecording != nullptr ? b3Recording_GetSize( m_previousRecording ) : 0;
+			int retainedFrames = m_previousFrames + m_timelineFrames;
+			ImGui::Text( "capturing: %.2f MB, %.1f s retained", ( bytes + previousBytes ) / ( 1024.0 * 1024.0 ),
+						m_context->hertz > 0.0f ? retainedFrames / m_context->hertz : 0.0f );
+			if ( m_rotations > 0 )
+			{
+				ImGui::TextDisabled( "history window rotated %d time%s", m_rotations, m_rotations == 1 ? "" : "s" );
+			}
+		}
+
+		ImGui::PopItemWidth();
+		return true;
+	}
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new RagdollRewind( context );
+	}
+
+private:
+	void BeginTimeline()
+	{
+		DiscardRecording();
+		if ( m_previousRecording != nullptr )
+		{
+			b3DestroyRecording( m_previousRecording );
+			m_previousRecording = nullptr;
+		}
+		m_previousFrames = 0;
+		m_recording = b3CreateRecording( 256 * 1024 );
+		b3World_StartRecording( m_worldId, m_recording );
+		m_timelineFrames = 0;
+	}
+
+	void RotateTimeline()
+	{
+		b3World_StopRecording( m_worldId );
+		if ( m_previousRecording != nullptr )
+		{
+			b3DestroyRecording( m_previousRecording );
+		}
+		m_previousRecording = m_recording;
+		m_previousFrames = m_timelineFrames;
+		m_recording = b3CreateRecording( 256 * 1024 );
+		b3World_StartRecording( m_worldId, m_recording );
+		m_timelineFrames = 0;
+	}
+
+	void DiscardRecording()
+	{
+		if ( m_recording == nullptr )
+		{
+			return;
+		}
+		b3World_StopRecording( m_worldId );
+		b3DestroyRecording( m_recording );
+		m_recording = nullptr;
+	}
+
+	void PauseAndBuildHistory()
+	{
+		uint64_t buildTicks = b3GetTicks();
+		// Do not carry the host-side grab helper into scrub mode.
+		MouseUp( {}, 0 );
+		b3World_StopRecording( m_worldId );
+		int currentBytes = b3Recording_GetSize( m_recording );
+		int previousBytes = m_previousRecording != nullptr ? b3Recording_GetSize( m_previousRecording ) : 0;
+		m_recordingBytes = currentBytes + previousBytes;
+
+		int playerCount = m_previousRecording != nullptr ? 2 : 1;
+		size_t playerBudget = (size_t)m_keyframeBudgetMB * 1024u * 1024u / (size_t)playerCount;
+		b3RecPlayer* nextOwner = CreatePlayer( m_recording, playerBudget );
+		if ( nextOwner == nullptr )
+		{
+			BeginTimeline();
+			return;
+		}
+
+		b3RecPlayer* previousPlayer = m_previousRecording != nullptr ? CreatePlayer( m_previousRecording, playerBudget ) : nullptr;
+		if ( m_previousRecording != nullptr && previousPlayer == nullptr )
+		{
+			b3RecPlayer_Destroy( nextOwner );
+			BeginTimeline();
+			return;
+		}
+
+		m_previousFrames = previousPlayer != nullptr ? b3RecPlayer_GetFrameCount( previousPlayer ) : 0;
+		int currentFrames = b3RecPlayer_GetFrameCount( nextOwner );
+		m_frameCount = m_previousFrames + currentFrames;
+		b3RecPlayer_SeekFrame( nextOwner, currentFrames );
+		if ( previousPlayer != nullptr )
+		{
+			b3RecPlayer_SeekFrame( previousPlayer, m_previousFrames );
+		}
+
+		b3WorldId previousWorld = m_worldId;
+		b3RecPlayer* previousOwner = m_worldOwner;
+		m_worldOwner = nextOwner;
+		m_previousPlayer = previousPlayer;
+		m_worldId = b3RecPlayer_GetWorldId( nextOwner );
+
+		// The new replay world is now authoritative, so the old timeline can be released.
+		if ( previousOwner != nullptr )
+		{
+			b3RecPlayer_Destroy( previousOwner );
+		}
+		else
+		{
+			b3DestroyWorld( previousWorld );
+		}
+
+		b3DestroyRecording( m_recording );
+		m_recording = nullptr;
+		if ( m_previousRecording != nullptr )
+		{
+			b3DestroyRecording( m_previousRecording );
+			m_previousRecording = nullptr;
+		}
+		m_scrubFrame = m_frameCount;
+		m_scrubbing = true;
+		m_buildHistoryMs = b3GetMilliseconds( buildTicks );
+	}
+
+	b3RecPlayer* CreatePlayer( b3Recording* recording, size_t budget )
+	{
+		b3RecPlayer* player = b3RecPlayer_Create( b3Recording_GetData( recording ), b3Recording_GetSize( recording ),
+											  m_context->workerCount );
+		if ( player == nullptr )
+		{
+			return nullptr;
+		}
+		b3RecPlayer_SetKeyframePolicy( player, budget, m_keyframeInterval );
+		b3WorldDef defTemplate = b3DefaultWorldDef();
+		AttachToWorldDef( &defTemplate );
+		b3RecPlayer_SetDebugShapeCallbacks( player, defTemplate.createDebugShape, defTemplate.destroyDebugShape,
+										 defTemplate.userDebugShapeContext );
+		return player;
+	}
+
+	void SeekTimeline( int frame )
+	{
+		m_scrubFrame = b3ClampInt( frame, 0, m_frameCount );
+		if ( m_previousPlayer != nullptr && m_scrubFrame <= m_previousFrames )
+		{
+			b3RecPlayer_SeekFrame( m_previousPlayer, m_scrubFrame );
+			m_worldId = b3RecPlayer_GetWorldId( m_previousPlayer );
+		}
+		else
+		{
+			int localFrame = m_scrubFrame - m_previousFrames;
+			b3RecPlayer_SeekFrame( m_worldOwner, localFrame );
+			m_worldId = b3RecPlayer_GetWorldId( m_worldOwner );
+		}
+	}
+
+	void ResumeFromHere()
+	{
+		ClearSelection();
+		if ( m_previousPlayer != nullptr && m_scrubFrame <= m_previousFrames )
+		{
+			b3RecPlayer_Destroy( m_worldOwner );
+			m_worldOwner = m_previousPlayer;
+			m_previousPlayer = nullptr;
+			m_worldId = b3RecPlayer_GetWorldId( m_worldOwner );
+		}
+		else if ( m_previousPlayer != nullptr )
+		{
+			b3RecPlayer_Destroy( m_previousPlayer );
+			m_previousPlayer = nullptr;
+		}
+		b3RecPlayer_TrimHistory( m_worldOwner );
+		DestroyResurrectedGrabRig();
+		m_scrubbing = false;
+		BeginTimeline();
+	}
+
+	void DestroyResurrectedGrabRig()
+	{
+		// Branching from a frame where a Ctrl-drag was active resurrects the recorded
+		// kinematic mouse body and its motor joint with the throw velocity still baked in.
+		// Nothing owns that rig in the branched timeline (the live grab helper's ids died
+		// with the pre-pause world), so the kinematic body would fly forever and haul the
+		// grabbed body with it. Destroy it exactly as MouseUp would have; destroying the
+		// body also destroys the attached joint.
+		int bodyCount = b3RecPlayer_GetBodyCount( m_worldOwner );
+		for ( int i = 0; i < bodyCount; ++i )
+		{
+			b3BodyId bodyId = b3RecPlayer_GetBodyId( m_worldOwner, i );
+			if ( b3Body_IsValid( bodyId ) && strcmp( b3Body_GetName( bodyId ), "mouse" ) == 0 )
+			{
+				b3DestroyBody( bodyId );
+			}
+		}
+	}
+
+	Human m_human = {};
+	b3RecPlayer* m_worldOwner = nullptr;
+	b3RecPlayer* m_previousPlayer = nullptr;
+	b3Recording* m_previousRecording = nullptr;
+	int m_timelineFrames = 0;
+	int m_previousFrames = 0;
+	int m_frameCount = 0;
+	int m_scrubFrame = 0;
+	int m_recordingBytes = 0;
+	int m_tapeBudgetMB = 16;
+	int m_keyframeBudgetMB = 64;
+	int m_keyframeInterval = 8;
+	int m_rotations = 0;
+	float m_buildHistoryMs = 0.0f;
+	float m_lastSeekMs = 0.0f;
+	float m_historySeconds = 15.0f;
+	bool m_scrubbing = false;
+};
+
+static int sampleRagdollRewind = RegisterSample( "Ragdoll", "Rewind", RagdollRewind::Create );
 
 class RagdollOnMesh : public Sample
 {

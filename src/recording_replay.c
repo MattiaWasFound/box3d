@@ -2531,17 +2531,34 @@ static void b3RecScanFile( b3RecPlayer* player )
 	player->frameCount = frameCount;
 }
 
-// Free one keyframe's heap.
-static void b3FreeKeyframe( b3RecKeyframe* kf )
+// Free one keyframe. Shared pages disappear only after their last keyframe releases them.
+static void b3FreeKeyframe( b3RecPlayer* player, b3RecKeyframe* kf )
 {
-	if ( kf->image != NULL )
+	player->keyframeLogicalBytes -= (size_t)kf->imageSize;
+	for ( int i = 0; i < kf->pageCount; ++i )
 	{
-		b3Free( kf->image, (size_t)kf->imageCapacity );
+		b3RecKeyframePage* page = kf->pages[i];
+		page->refCount -= 1;
+		if ( page->refCount == 0 )
+		{
+			int allocationBytes = page->allocationBytes;
+			b3Free( page, (size_t)allocationBytes );
+			player->keyframeBytes -= (size_t)allocationBytes;
+		}
+	}
+	if ( kf->pages != NULL )
+	{
+		size_t tableBytes = (size_t)kf->pageCount * sizeof( b3RecKeyframePage* );
+		b3Free( kf->pages, tableBytes );
+		player->keyframeBytes -= tableBytes;
 	}
 	if ( kf->bodyIds != NULL )
 	{
-		b3Free( kf->bodyIds, (size_t)kf->bodyIdCount * sizeof( b3BodyId ) );
+		size_t bodyBytes = (size_t)kf->bodyIdCount * sizeof( b3BodyId );
+		b3Free( kf->bodyIds, bodyBytes );
+		player->keyframeBytes -= bodyBytes;
 	}
+	memset( kf, 0, sizeof( *kf ) );
 }
 
 // Pre-populate keyframeRec's registry to mirror rdr.slots so geometry ids stay stable during
@@ -2583,38 +2600,6 @@ static void b3RecCaptureKeyframe( b3RecPlayer* player )
 	// Registry must not grow: all geometry was pre-seeded and the registry dedups exactly.
 	B3_ASSERT( player->keyframeRec->registry.count == regCountBefore );
 
-	size_t bodyBytes = (size_t)player->bodyIdCount * sizeof( b3BodyId );
-	size_t newBytes = (size_t)buf.capacity + bodyBytes;
-
-	// Make room under the budget by doubling the spacing and evicting off-grid keyframes.
-	while ( player->keyframeCount > 0 && player->keyframeBytes + newBytes > player->keyframeBudget )
-	{
-		player->keyframeInterval *= 2;
-		int kept = 0;
-		size_t keptBytes = 0;
-		for ( int i = 0; i < player->keyframeCount; ++i )
-		{
-			b3RecKeyframe* kf = player->keyframes + i;
-			if ( kf->frame % player->keyframeInterval == 0 )
-			{
-				player->keyframes[kept] = *kf;
-				keptBytes += (size_t)kf->imageCapacity + (size_t)kf->bodyIdCount * sizeof( b3BodyId );
-				kept += 1;
-			}
-			else
-			{
-				b3FreeKeyframe( kf );
-			}
-		}
-		bool progress = ( kept < player->keyframeCount );
-		player->keyframeCount = kept;
-		player->keyframeBytes = keptBytes;
-		if ( !progress )
-		{
-			break;
-		}
-	}
-
 	// Grow the keyframe ring if needed.
 	if ( player->keyframeCount >= player->keyframeCapacity )
 	{
@@ -2625,31 +2610,126 @@ static void b3RecCaptureKeyframe( b3RecPlayer* player )
 	}
 
 	b3RecKeyframe* kf = player->keyframes + player->keyframeCount;
-	kf->image = buf.data;
+	memset( kf, 0, sizeof( *kf ) );
 	kf->imageSize = buf.size;
-	kf->imageCapacity = buf.capacity;
+	kf->pageCount = ( buf.size + B3_REC_KEYFRAME_PAGE_SIZE - 1 ) / B3_REC_KEYFRAME_PAGE_SIZE;
+	if ( kf->pageCount > 0 )
+	{
+		size_t tableBytes = (size_t)kf->pageCount * sizeof( b3RecKeyframePage* );
+		kf->pages = (b3RecKeyframePage**)b3Alloc( tableBytes );
+		player->keyframeBytes += tableBytes;
+	}
+
+	const b3RecKeyframe* previous = player->keyframeCount > 0 ? player->keyframes + player->keyframeCount - 1 : NULL;
+	for ( int i = 0; i < kf->pageCount; ++i )
+	{
+		int offset = i * B3_REC_KEYFRAME_PAGE_SIZE;
+		int byteCount = b3MinInt( B3_REC_KEYFRAME_PAGE_SIZE, buf.size - offset );
+		b3RecKeyframePage* page = NULL;
+		if ( previous != NULL && i < previous->pageCount )
+		{
+			b3RecKeyframePage* candidate = previous->pages[i];
+			if ( candidate->byteCount == byteCount && memcmp( candidate->data, buf.data + offset, (size_t)byteCount ) == 0 )
+			{
+				page = candidate;
+				page->refCount += 1;
+			}
+		}
+		else if ( previous == NULL && offset + byteCount <= player->frame0Size &&
+				 memcmp( player->frame0Image + offset, buf.data + offset, (size_t)byteCount ) == 0 )
+		{
+			// The recording already owns frame 0. Borrow an unchanged seed page instead of
+			// allocating a second baseline copy; TrimHistory releases keyframes before data.
+			page = (b3RecKeyframePage*)b3Alloc( sizeof( b3RecKeyframePage ) );
+			page->refCount = 1;
+			page->byteCount = byteCount;
+			page->allocationBytes = (int)sizeof( b3RecKeyframePage );
+			page->data = player->frame0Image + offset;
+			player->keyframeBytes += sizeof( b3RecKeyframePage );
+		}
+		if ( page == NULL )
+		{
+			int allocationBytes = (int)sizeof( b3RecKeyframePage ) + byteCount;
+			page = (b3RecKeyframePage*)b3Alloc( (size_t)allocationBytes );
+			page->refCount = 1;
+			page->byteCount = byteCount;
+			page->allocationBytes = allocationBytes;
+			page->data = (const uint8_t*)( page + 1 );
+			memcpy( (uint8_t*)page->data, buf.data + offset, (size_t)byteCount );
+			player->keyframeBytes += (size_t)allocationBytes;
+		}
+		kf->pages[i] = page;
+	}
+	b3RecBufFree( &buf );
 	kf->frame = player->frame;
 	kf->cursor = player->rdr.cursor;
 	kf->divergeFrame = player->divergeFrame;
 	kf->diverged = player->rdr.diverged;
 	kf->bodyIdCount = player->bodyIdCount;
 	kf->bodyIds = NULL;
+	size_t bodyBytes = (size_t)player->bodyIdCount * sizeof( b3BodyId );
 	if ( bodyBytes > 0 )
 	{
 		kf->bodyIds = (b3BodyId*)b3Alloc( bodyBytes );
 		memcpy( kf->bodyIds, player->bodyIds, bodyBytes );
+		player->keyframeBytes += bodyBytes;
 	}
 
-	player->keyframeBytes += newBytes;
 	player->keyframeCount += 1;
+	player->keyframeLogicalBytes += (size_t)kf->imageSize;
 	player->lastKeyframeFrame = player->frame;
+
+	// Stay under budget by widening the spacing and releasing off-grid keyframes. Page
+	// reference counts make this safe even when a kept keyframe shares data with an evicted one.
+	while ( player->keyframeCount > 1 && player->keyframeBytes > player->keyframeBudget )
+	{
+		player->keyframeInterval *= 2;
+		int oldCount = player->keyframeCount;
+		int kept = 0;
+		for ( int i = 0; i < oldCount; ++i )
+		{
+			b3RecKeyframe* candidate = player->keyframes + i;
+			if ( candidate->frame % player->keyframeInterval == 0 || i == oldCount - 1 )
+			{
+				if ( kept != i )
+				{
+					player->keyframes[kept] = *candidate;
+					memset( candidate, 0, sizeof( *candidate ) );
+				}
+				kept += 1;
+			}
+			else
+			{
+				b3FreeKeyframe( player, candidate );
+			}
+		}
+		player->keyframeCount = kept;
+		if ( kept == oldCount )
+		{
+			break;
+		}
+	}
 }
 
 // Restore the world in-place from a keyframe image.
 static void b3RecPlayerRestoreKeyframe( b3RecPlayer* player, const b3RecKeyframe* kf )
 {
 	b3World* world = b3GetWorldFromId( player->rdr.replayWorldId );
-	if ( b3DeserializeIntoShell( kf->image, kf->imageSize, world, &player->rdr ) == false )
+	if ( player->keyframeScratchCapacity < kf->imageSize )
+	{
+		int newCapacity = player->keyframeScratchCapacity > 0 ? player->keyframeScratchCapacity : B3_REC_KEYFRAME_PAGE_SIZE;
+		while ( newCapacity < kf->imageSize )
+		{
+			newCapacity *= 2;
+		}
+		player->keyframeScratch = (uint8_t*)b3GrowAlloc( player->keyframeScratch, player->keyframeScratchCapacity, newCapacity );
+		player->keyframeScratchCapacity = newCapacity;
+	}
+	for ( int i = 0; i < kf->pageCount; ++i )
+	{
+		memcpy( player->keyframeScratch + i * B3_REC_KEYFRAME_PAGE_SIZE, kf->pages[i]->data, (size_t)kf->pages[i]->byteCount );
+	}
+	if ( b3DeserializeIntoShell( player->keyframeScratch, kf->imageSize, world, &player->rdr ) == false )
 	{
 		player->rdr.ok = false;
 		return;
@@ -2890,11 +2970,15 @@ void b3RecPlayer_Destroy( b3RecPlayer* player )
 	// Free keyframe ring.
 	for ( int i = 0; i < player->keyframeCount; ++i )
 	{
-		b3FreeKeyframe( player->keyframes + i );
+		b3FreeKeyframe( player, player->keyframes + i );
 	}
 	if ( player->keyframes != NULL )
 	{
 		b3Free( player->keyframes, (size_t)player->keyframeCapacity * sizeof( b3RecKeyframe ) );
+	}
+	if ( player->keyframeScratch != NULL )
+	{
+		b3Free( player->keyframeScratch, (size_t)player->keyframeScratchCapacity );
 	}
 
 	// The keyframe recording owns only its buffer and registry; b3DestroyRecording frees both.
@@ -2915,7 +2999,10 @@ void b3RecPlayer_Destroy( b3RecPlayer* player )
 
 	// frame0Image points into the owned data copy, not separately allocated.
 
-	b3Free( player->data, (size_t)player->size );
+	if ( player->data != NULL )
+	{
+		b3Free( player->data, (size_t)player->size );
+	}
 
 	// Restore the global length scale.
 	b3SetLengthUnitsPerMeter( player->previousLengthScale );
@@ -2956,7 +3043,17 @@ bool b3RecPlayer_StepFrame( b3RecPlayer* player )
 		{
 			if ( player->frame > player->lastKeyframeFrame && player->frame % player->keyframeInterval == 0 )
 			{
-				b3RecCaptureKeyframe( player );
+				if ( player->activitySinceKeyframe )
+				{
+					b3RecCaptureKeyframe( player );
+					player->activitySinceKeyframe = false;
+				}
+				else
+				{
+					// The frame number still advances in the opcode tape. An older keyframe plus
+					// those cheap idle Step records restores the same state without another image.
+					player->skippedKeyframeCount += 1;
+				}
 			}
 			return true;
 		}
@@ -2976,6 +3073,8 @@ bool b3RecPlayer_StepFrame( b3RecPlayer* player )
 		{
 			player->frame += 1;
 			stepped = true;
+			b3BodyEvents events = b3World_GetBodyEvents( player->rdr.replayWorldId );
+			player->activitySinceKeyframe = player->activitySinceKeyframe || events.moveCount > 0;
 		}
 		else if ( op == b3_recOpStateHash ) // trailing record of the frame just stepped
 		{
@@ -2985,6 +3084,12 @@ bool b3RecPlayer_StepFrame( b3RecPlayer* player )
 			{
 				player->divergeFrame = player->frame;
 			}
+		}
+		else
+		{
+			// Conservatively treat any recorded API operation as activity. This may keep an
+			// unnecessary keyframe for a read-only query, but can never skip a useful mutation.
+			player->activitySinceKeyframe = true;
 		}
 	}
 }
@@ -3025,7 +3130,15 @@ void b3RecPlayer_SubStepFrame( b3RecPlayer* player )
 		{
 			if ( player->frame > player->lastKeyframeFrame && player->frame % player->keyframeInterval == 0 )
 			{
-				b3RecCaptureKeyframe( player );
+				if ( player->activitySinceKeyframe )
+				{
+					b3RecCaptureKeyframe( player );
+					player->activitySinceKeyframe = false;
+				}
+				else
+				{
+					player->skippedKeyframeCount += 1;
+				}
 			}
 			return;
 		}
@@ -3061,6 +3174,8 @@ void b3RecPlayer_SubStepFrame( b3RecPlayer* player )
 			player->atPreStep = false;
 			player->frame += 1;
 			stepped = true;
+			b3BodyEvents events = b3World_GetBodyEvents( player->rdr.replayWorldId );
+			player->activitySinceKeyframe = player->activitySinceKeyframe || events.moveCount > 0;
 		}
 		else if ( op == b3_recOpStateHash ) // trailing record of the frame just stepped
 		{
@@ -3071,11 +3186,22 @@ void b3RecPlayer_SubStepFrame( b3RecPlayer* player )
 				player->divergeFrame = player->frame;
 			}
 		}
+		else
+		{
+			// Match StepFrame: any recorded API operation counts as activity so an idle skip can
+			// never lose a mutation, whichever stepping entry point drives the replay.
+			player->activitySinceKeyframe = true;
+		}
 	}
 }
 
 void b3RecPlayer_Restart( b3RecPlayer* player )
 {
+	if ( player == NULL || player->data == NULL )
+	{
+		return;
+	}
+
 	// Restore the frame-0 image in place so the replay world id stays stable across a restart or
 	// backward scrub. Stepping resumes at the first Step, which rebuilds the body list deterministically.
 	b3World* world = b3GetWorldFromId( player->rdr.replayWorldId );
@@ -3091,6 +3217,7 @@ void b3RecPlayer_Restart( b3RecPlayer* player )
 	player->divergeFrame = -1;
 	player->atEnd = false;
 	player->atPreStep = false;
+	player->activitySinceKeyframe = false;
 
 	// Frame 0 is the pre-step snapshot with no recorded queries, so clear the per-frame store. This
 	// keeps the last stepped frame's queries from lingering on a restart or a backward scrub to 0.
@@ -3108,7 +3235,7 @@ void b3RecPlayer_Restart( b3RecPlayer* player )
 
 void b3RecPlayer_SeekFrame( b3RecPlayer* player, int targetFrame )
 {
-	if ( player == NULL )
+	if ( player == NULL || player->data == NULL )
 	{
 		return;
 	}
@@ -3152,6 +3279,54 @@ void b3RecPlayer_SeekFrame( b3RecPlayer* player, int targetFrame )
 	while ( player->frame < targetFrame && b3RecPlayer_StepFrame( player ) )
 	{
 	}
+}
+
+void b3RecPlayer_TrimHistory( b3RecPlayer* player )
+{
+	if ( player == NULL || player->data == NULL )
+	{
+		return;
+	}
+
+	for ( int i = 0; i < player->keyframeCount; ++i )
+	{
+		b3FreeKeyframe( player, player->keyframes + i );
+	}
+	if ( player->keyframes != NULL )
+	{
+		b3Free( player->keyframes, (size_t)player->keyframeCapacity * sizeof( b3RecKeyframe ) );
+	}
+	player->keyframes = NULL;
+	player->keyframeCount = 0;
+	player->keyframeCapacity = 0;
+	player->keyframeBytes = 0;
+	player->keyframeLogicalBytes = 0;
+	player->skippedKeyframeCount = 0;
+	player->activitySinceKeyframe = false;
+	if ( player->keyframeScratch != NULL )
+	{
+		b3Free( player->keyframeScratch, (size_t)player->keyframeScratchCapacity );
+		player->keyframeScratch = NULL;
+		player->keyframeScratchCapacity = 0;
+	}
+
+	if ( player->keyframeRec != NULL )
+	{
+		b3DestroyRecording( player->keyframeRec );
+		player->keyframeRec = NULL;
+	}
+
+	b3Free( player->data, (size_t)player->size );
+	player->data = NULL;
+	player->size = 0;
+	player->headerEnd = 0;
+	player->registryEnd = 0;
+	player->frame0Image = NULL;
+	player->frame0Size = 0;
+	player->rdr.data = NULL;
+	player->rdr.size = 0;
+	player->rdr.cursor = 0;
+	player->atEnd = true;
 }
 
 b3WorldId b3RecPlayer_GetWorldId( const b3RecPlayer* player )
@@ -3240,12 +3415,15 @@ void b3RecPlayer_SetKeyframePolicy( b3RecPlayer* player, size_t budgetBytes, int
 	// Drop the ring so it repopulates under the new policy on the next replay.
 	for ( int i = 0; i < player->keyframeCount; ++i )
 	{
-		b3FreeKeyframe( player->keyframes + i );
+		b3FreeKeyframe( player, player->keyframes + i );
 	}
 	player->keyframeCount = 0;
 	player->keyframeBytes = 0;
+	player->keyframeLogicalBytes = 0;
 	player->keyframeInterval = player->keyframeMinInterval;
 	player->lastKeyframeFrame = 0;
+	player->skippedKeyframeCount = 0;
+	player->activitySinceKeyframe = false;
 }
 
 size_t b3RecPlayer_GetKeyframeBudget( const b3RecPlayer* player )
@@ -3266,6 +3444,16 @@ int b3RecPlayer_GetKeyframeInterval( const b3RecPlayer* player )
 size_t b3RecPlayer_GetKeyframeBytes( const b3RecPlayer* player )
 {
 	return player != NULL ? player->keyframeBytes : 0;
+}
+
+size_t b3RecPlayer_GetKeyframeLogicalBytes( const b3RecPlayer* player )
+{
+	return player != NULL ? player->keyframeLogicalBytes : 0;
+}
+
+int b3RecPlayer_GetSkippedKeyframeCount( const b3RecPlayer* player )
+{
+	return player != NULL ? player->skippedKeyframeCount : 0;
 }
 
 int b3RecPlayer_GetBodyCount( const b3RecPlayer* player )

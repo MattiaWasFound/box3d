@@ -344,6 +344,15 @@ B3_API void b3RecPlayer_Restart( b3RecPlayer* player );
 /// the nearest keyframe then re-steps the remaining gap.
 B3_API void b3RecPlayer_SeekFrame( b3RecPlayer* player, int targetFrame );
 
+/// Irreversibly discard the recording bytes and keyframes while keeping the player's current world
+/// alive. The world returned by b3RecPlayer_GetWorldId remains a normal mutable world and is still
+/// destroyed by b3RecPlayer_Destroy. Restart, seek, and stepping the old recording are disabled.
+/// Use this after branching from a scrubbed frame to release the discarded future's memory.
+/// Note: transient bodies the recording created (input rigs like a kinematic mouse body and its
+/// joint) stay alive in the branched world with their recorded velocities; the application must
+/// find and destroy the ones it does not want (e.g. by body name via b3RecPlayer_GetBodyId).
+B3_API void b3RecPlayer_TrimHistory( b3RecPlayer* player );
+
 /// @return the world currently driven by this player
 B3_API b3WorldId b3RecPlayer_GetWorldId( const b3RecPlayer* player );
 
@@ -395,6 +404,14 @@ B3_API int b3RecPlayer_GetKeyframeInterval( const b3RecPlayer* player );
 
 /// @return the memory currently held by keyframe snapshots, in bytes
 B3_API size_t b3RecPlayer_GetKeyframeBytes( const b3RecPlayer* player );
+
+/// @return bytes the kept keyframes would occupy as independent full images, before copy-on-write
+/// page sharing. Compare with b3RecPlayer_GetKeyframeBytes to measure retained-memory savings.
+B3_API size_t b3RecPlayer_GetKeyframeLogicalBytes( const b3RecPlayer* player );
+
+/// @return the number of scheduled keyframe points skipped because no body moved and no mutation
+/// was recorded since the previous point. Frame numbers still advance through compact Step records.
+B3_API int b3RecPlayer_GetSkippedKeyframeCount( const b3RecPlayer* player );
 
 /// @return the number of bodies tracked in creation order (including holes for destroyed bodies)
 B3_API int b3RecPlayer_GetBodyCount( const b3RecPlayer* player );
