@@ -243,7 +243,10 @@ public:
 			return;
 		}
 
-		printf( "max index = %d\n", maxAreaIndex );
+		if ( m_context->headless == false )
+		{
+			printf( "max index = %d\n", maxAreaIndex );
+		}
 
 		// constexpr int n = m_isDebug ? 1000 : INT_MAX;
 
@@ -320,7 +323,10 @@ public:
 			m_proxies[m_tree.proxies[proxyId].userData] = proxy;
 		}
 
-		printf( "max index = %d\n", maxAreaIndex );
+		if ( m_context->headless == false )
+		{
+			printf( "max index = %d\n", maxAreaIndex );
+		}
 
 		// constexpr int n = m_isDebug ? 1000 : INT_MAX;
 
