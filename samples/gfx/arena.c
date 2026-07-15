@@ -39,6 +39,11 @@ void* ArenaAlloc( Arena* a, size_t size, size_t align )
 {
 	assert( a );
 	assert( align > 0 && ( align & ( align - 1 ) ) == 0 ); // power of two
+	if ( a->capacity == 0 )
+	{
+		return NULL;
+	}
+
 	// Align the absolute address, malloc's base is only guaranteed to be
 	// alignof(max_align_t)-aligned (16 on x64 MSVC), so aligning the offset
 	// alone breaks for align > 16.

@@ -1626,7 +1626,8 @@ public:
 	// Pull the boom in when the view to the mover is blocked
 	void FollowMover( b3Pos position )
 	{
-		if ( m_camera->m_thirdPerson == false )
+		// Headless runs have no ImGui frame, and the boom only places the view
+		if ( m_camera->m_thirdPerson == false || m_context->headless )
 		{
 			m_aiming = false;
 			m_aimBlend = 0.0f;
@@ -2823,8 +2824,8 @@ public:
 
 		// Read input
 		b3Vec2 throttle = { 0.0f, 0.0f };
-		b3Vec3 forward = -m_camera->GetForward();
-		b3Vec3 right = m_camera->GetRight();
+		b3Vec3 forward = m_context->hasInputBasis ? m_context->inputForward : -m_camera->GetForward();
+		b3Vec3 right = m_context->hasInputBasis ? m_context->inputRight : m_camera->GetRight();
 		forward.y = 0.0f;
 
 		// Normalize forward to horizontal plane

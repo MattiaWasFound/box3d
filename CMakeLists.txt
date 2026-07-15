@@ -149,6 +149,7 @@ add_subdirectory(src)
 # This hides samples, test, and doxygen from apps that use box3d via FetchContent
 if(PROJECT_IS_TOP_LEVEL)
 	option(BOX3D_SAMPLES "Build the Box3D samples" ON)
+	option(BOX3D_SAMPLE_PARITY "Build the opt-in headless sample parity runner" OFF)
 	option(BOX3D_BENCHMARKS "Build the Box3D benchmarks" OFF)
 	option(BOX3D_DOCS "Build the Box3D documentation" OFF)
 	option(BOX3D_UNIT_TESTS "Build the Box3D unit tests" ON)
@@ -168,6 +169,10 @@ if(PROJECT_IS_TOP_LEVEL)
 		set_target_properties(test PROPERTIES XCODE_GENERATE_SCHEME TRUE)
 	elseif(BOX3D_UNIT_TESTS)
 		message(STATUS "Skipping Box3D unit tests")
+	endif()
+
+	if(BOX3D_SAMPLE_PARITY AND NOT BOX3D_SAMPLES)
+		message(FATAL_ERROR "BOX3D_SAMPLE_PARITY requires BOX3D_SAMPLES=ON: sample_hash builds inside samples/")
 	endif()
 
 	if(BOX3D_SAMPLES)
