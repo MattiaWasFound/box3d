@@ -122,12 +122,24 @@ typedef struct b3RecReader
 	int proxyScratchCap;
 } b3RecReader;
 
+#define B3_REC_KEYFRAME_PAGE_SIZE 4096
+
+// Reference-counted copy-on-write storage. Consecutive keyframes share byte-identical pages, so
+// sleeping islands and other unchanged world regions occupy memory once.
+typedef struct b3RecKeyframePage
+{
+	int refCount;
+	int byteCount;
+	int allocationBytes;
+	const uint8_t* data;
+} b3RecKeyframePage;
+
 // Stored snapshot for fast backward seek.
 typedef struct b3RecKeyframe
 {
-	uint8_t* image; // serialized world image at the end of this frame
+	b3RecKeyframePage** pages;
+	int pageCount;
 	int imageSize;
-	int imageCapacity; // allocation size (may exceed imageSize)
 	int frame;		   // frame index this restores to
 	int cursor;		   // op-stream cursor for the frame AFTER this one
 	int divergeFrame;  // divergeFrame state at capture
@@ -197,9 +209,14 @@ typedef struct b3RecPlayer
 	int keyframeCapacity;
 	size_t keyframeBudget;
 	size_t keyframeBytes;
+	size_t keyframeLogicalBytes;
 	int keyframeMinInterval;
 	int keyframeInterval;
 	int lastKeyframeFrame;
+	int skippedKeyframeCount;
+	bool activitySinceKeyframe;
+	uint8_t* keyframeScratch;
+	int keyframeScratchCapacity;
 
 	// Pre-populated recording used by b3SerializeWorld during keyframe capture.
 	// Its registry mirrors rdr.slots so geometry ids stay stable.
