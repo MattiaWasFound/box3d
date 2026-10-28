@@ -646,6 +646,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 		b3WorldTransform transformA = bodySimA->transform;
 		b3WorldTransform transformB = bodySimB->transform;
 
+		// This is really just needed for mesh collision to prevent tunneling.
 		bool isFast = ( ( bodySimA->flags | bodySimB->flags ) & b3_isFast ) != 0;
 
 		float recycleTolerance = wasTouching ? recycleDistance : recycleDistanceNonTouching;
@@ -743,7 +744,8 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 		contact->flags |= b3_relativeTransformValid;
 
 		// This updates solid contacts
-		bool touching = b3UpdateContact( world, workerIndex, contact, shapeA, bodySimA->localCenter, transformA, shapeB,
+		bool touching = b3UpdateContact( world, workerIndex, contact, shapeA, bodySimA->localCenter,
+										 transformA, shapeB,
 										 bodySimB->localCenter, transformB, isFast, taskContext->arena );
 
 		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );

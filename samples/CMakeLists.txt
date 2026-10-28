@@ -169,8 +169,10 @@ set(SAMPLE_FILES
     sample.h
     mesh_loader.cpp
     mesh_loader.h
-    mover.cpp
-    mover.h
+    dynamic_mover.cpp
+    dynamic_mover.h
+    geometric_mover.cpp
+    geometric_mover.h
     jsmn.h
     tiny_obj_loader.h
     earcut.h

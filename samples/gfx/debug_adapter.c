@@ -122,6 +122,10 @@ typedef struct
 	bool transparentDynamic;
 	bool transparentKinematic;
 
+	// One body drawn with reduced alpha, such as a character the camera is close to
+	b3BodyId alphaBodyId;
+	float bodyAlpha;
+
 	// View box for compound child culling, world space, refreshed once per frame.
 	b3AABB viewBounds;
 	bool hasViewBounds;
@@ -158,6 +162,8 @@ void InitAdapter( void )
 	s_adapter.selectedShapeId = b3_nullShapeId;
 	s_adapter.transparentDynamic = false;
 	s_adapter.transparentKinematic = false;
+	s_adapter.alphaBodyId = b3_nullBodyId;
+	s_adapter.bodyAlpha = 1.0f;
 
 	s_adapter.hasViewBounds = false;
 	s_adapter.lastCompoundAppended = 0;
@@ -197,6 +203,8 @@ void ResetAdapterPool( void )
 	s_adapter.selectedShapeId = b3_nullShapeId;
 	s_adapter.transparentDynamic = false;
 	s_adapter.transparentKinematic = false;
+	s_adapter.alphaBodyId = b3_nullBodyId;
+	s_adapter.bodyAlpha = 1.0f;
 
 	s_adapter.hasViewBounds = false;
 	s_adapter.lastCompoundAppended = 0;
@@ -237,6 +245,12 @@ void SetTransparentDynamic( bool enabled )
 void SetTransparentKinematic( bool enabled )
 {
 	s_adapter.transparentKinematic = enabled;
+}
+
+void SetBodyAlpha( b3BodyId bodyId, float alpha )
+{
+	s_adapter.alphaBodyId = bodyId;
+	s_adapter.bodyAlpha = alpha;
 }
 
 void SetViewBounds( b3AABB bounds )
@@ -860,6 +874,11 @@ static void DrawShape( void* userShape, b3WorldTransform shapeTransform, b3HexCo
 	if ( s_adapter.transparentDynamic && us->bodyType == b3_dynamicBody )
 	{
 		c.w = BOX3D_TRANSPARENT_ALPHA;
+	}
+
+	if ( s_adapter.bodyAlpha < 1.0f && B3_ID_EQUALS( us->bodyId, s_adapter.alphaBodyId ) )
+	{
+		c.w = b3MinFloat( c.w, s_adapter.bodyAlpha );
 	}
 
 	if ( s_adapter.transparentKinematic && us->bodyType == b3_kinematicBody )

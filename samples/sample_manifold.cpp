@@ -1722,13 +1722,17 @@ public:
 		b3Vec3 axis = b3Normalize( b3Cross( u, v ) );
 		b3Vec3 w = b3Cross( axis, u );
 		constexpr int segmentCount = 96;
+		b3CosSin cs = b3ComputeCosSin( 2.0f * B3_PI / segmentCount );
+		float x1 = 1.0f, y1 = 0.0f;
 		b3Pos previous = GaussPoint( u );
-		for ( int i = 1; i <= segmentCount; ++i )
+		for ( int i = 0; i < segmentCount; ++i )
 		{
-			float angle = 2.0f * B3_PI * i / segmentCount;
-			b3CosSin cs = b3ComputeCosSin( angle );
-			b3Pos point = GaussPoint( b3Add( b3MulSV( cs.cosine, u ), b3MulSV( cs.sine, w ) ) );
+			float x2 = cs.cosine * x1 - cs.sine * y1;
+			float y2 = cs.sine * x1 + cs.cosine * y1;
+			b3Pos point = GaussPoint( b3Add( b3MulSV( x2, u ), b3MulSV( y2, w ) ) );
 			DrawLineEx( previous, point, color, 1.0f, OVERLAY_THICKNESS_PIXELS, OVERLAY_OCCLUSION_DASHED );
+			x1 = x2;
+			y1 = y2;
 			previous = point;
 		}
 	}

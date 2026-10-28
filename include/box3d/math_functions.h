@@ -1053,6 +1053,20 @@ B3_INLINE b3Vec3 b3ClosestPointToAABB( b3Vec3 point, b3AABB a )
 	return b3Clamp( point, a.lowerBound, a.upperBound );
 }
 
+/// One-dimensional mass-spring-damper simulation. Returns the new velocity given the position and
+/// time step. You can then compute the new position using:
+/// position += timeStep * newVelocity
+/// This drives towards a zero position. By using implicit integration we get a stable solution that
+/// doesn't require transcendental functions.
+B3_INLINE float b3SpringDamper( float hertz, float dampingRatio, float position, float velocity,
+								float timeStep )
+{
+	float omega = 2.0f * B3_PI * hertz;
+	float omegaH = omega * timeStep;
+	return ( velocity - omega * omegaH * position ) /
+		   ( 1.0f + 2.0f * dampingRatio * omegaH + omegaH * omegaH );
+}
+
 /// The closest points between to segments or infinite lines.
 typedef struct b3SegmentDistanceResult
 {

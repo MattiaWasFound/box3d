@@ -97,6 +97,11 @@ void SetKeyDown( int key, bool down )
 	}
 }
 
+void ClearKeysDown()
+{
+	memset( s_keyDown, 0, sizeof( s_keyDown ) );
+}
+
 void SampleContext::Save()
 {
 	const b3DebugDraw* gd = GetGuiDraw();
@@ -1789,6 +1794,11 @@ static void DrawMenuBar( SampleContext* context )
 			{
 				context->showUI = false;
 			}
+			if ( ImGui::MenuItem( "Hide UI and Text", "Shift+Tab" ) )
+			{
+				context->showUI = false;
+				context->showText = false;
+			}
 			if ( ImGui::MenuItem( "Frame Selection", "F" ) )
 			{
 				FrameSelection( context );
@@ -1921,6 +1931,7 @@ static void DrawMenuBar( SampleContext* context )
 				if ( ImGui::BeginTable( "keys", 2, ImGuiTableFlags_SizingFixedFit ) )
 				{
 					DrawRow( "Tab", "Show / hide UI" );
+					DrawRow( "Shift+Tab", "Show / hide UI and text" );
 					DrawRow( "M", "Show / hide metrics" );
 					DrawRow( "I", "Show / hide profile" );
 					DrawRow( "P", "Pause / resume" );
@@ -2261,7 +2272,7 @@ static void DrawHud( SampleContext* context )
 	const SampleEntry& entry = g_sampleEntries[context->sampleIndex];
 	float fontSize = ImGui::GetFontSize();
 
-	DrawScreenStringFormat( 5, (int)( 1.5f * fontSize ), MakeColor( b3_colorYellow ), "%s : %s", entry.Category, entry.Name );
+	DrawScreenStringFormat( 5, (int)( 0.5f * fontSize ), MakeColor( b3_colorYellow ), "%s : %s", entry.Category, entry.Name );
 
 	if ( context->pause )
 	{
@@ -2277,7 +2288,10 @@ void DrawUI( SampleContext* context )
 	// Hidden shows only the minimal in-world HUD.
 	if ( context->showUI == false )
 	{
-		DrawHud( context );
+		if ( context->showText )
+		{
+			DrawHud( context );
+		}
 		return;
 	}
 
@@ -2306,6 +2320,46 @@ void Sample::ToggleThirdPerson()
 		m_camera->m_thirdPerson = true;
 		ClearSelection();
 	}
+}
+
+MoverInput Sample::GetMoverInput() const
+{
+	MoverInput input = {};
+	input.forward = -m_camera->GetForward();
+	input.right = m_camera->GetRight();
+
+	input.forward.y = 0.0f;
+	input.forward = b3Normalize( input.forward );
+
+	if ( m_camera->m_thirdPerson == false )
+	{
+		return input;
+	}
+
+	if ( IsKeyDown( KEY_W ) )
+	{
+		input.throttle.x += 1.0f;
+	}
+
+	if ( IsKeyDown( KEY_S ) )
+	{
+		input.throttle.x -= 1.0f;
+	}
+
+	if ( IsKeyDown( KEY_A ) )
+	{
+		input.throttle.y -= 1.0f;
+	}
+
+	if ( IsKeyDown( KEY_D ) )
+	{
+		input.throttle.y += 1.0f;
+	}
+
+	input.jump = IsKeyDown( KEY_SPACE );
+	input.sprint = IsKeyDown( KEY_LEFT_SHIFT ) || IsKeyDown( KEY_RIGHT_SHIFT );
+	input.walk = IsKeyDown( KEY_LEFT_CONTROL ) || IsKeyDown( KEY_RIGHT_CONTROL );
+	return input;
 }
 
 float CastClosestCallback( b3ShapeId shapeId, b3Pos point, b3Vec3 normal, float fraction, uint64_t materialId, int triangleIndex,
